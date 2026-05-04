@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 import os
 import json
 
+# Loading the config files
 def load_all_configs():
     """Reads the JSON file. Returns an empty dict if the file doesn't exist."""
     if not os.path.exists("config.json"):
@@ -16,6 +17,7 @@ def load_all_configs():
     except json.JSONDecodeError:
         return {}
 
+# Saving config files
 def save_config(guild_id, hub_id, cat_id):
     """Updates the JSON file with new IDs for a specific server."""
     data = load_all_configs()
@@ -44,25 +46,22 @@ intents.guilds = True        # Required to manage channels
 # Bot command prefix
 bot = commands.Bot(command_prefix="/", intents=intents)
 
-# Tracking created channels
-temp_channels = []
-
+# On ready Event
 @bot.event
 async def on_ready():
     bot.add_view(VoiceControlView())
     await bot.tree.sync()
-    print("Commands synced!")
     print(f'Logged in as {bot.user.name}')
 
 # /setup command
 @bot.tree.command(name="setup", description="Set the Hub channel and Category for temporary VCs")
-@app_commands.checks.has_permissions(administrator=True)
+@app_commands.checks.has_permissions(administrator=True) # Allow only Admins to run /setup command
 async def setup(interaction: discord.Interaction):
     guild = interaction.guild
     category_name = "Temporary Channels"
     hub_name = "➕ Join to Create"
 
-    # 1. Check if the Category exists
+    # 1. Check if the Category exists,If not then it creates one
     category = discord.utils.get(guild.categories, name=category_name)
     if category is None:
         category = await guild.create_category(category_name)
@@ -70,7 +69,7 @@ async def setup(interaction: discord.Interaction):
     else:
         status_cat = f"ℹ️ Category **{category_name}** already exists."
 
-    # 2. Check if the Hub Channel exists inside that category
+    # 2. Check if the Hub Channel exists inside that category, If not then it creates one
     hub_channel = discord.utils.get(category.voice_channels, name=hub_name)
     if hub_channel is None:
         hub_channel = await guild.create_voice_channel(
@@ -131,7 +130,6 @@ async def on_voice_state_update(member, before, after):
         )
 
         await member.move_to(new_channel) # Move the member to the new channel
-        temp_channels.append(new_channel.id) # Add to our tracking list
 
         # NEW: Send the interface message
         embed = discord.Embed(
@@ -142,11 +140,20 @@ async def on_voice_state_update(member, before, after):
         await new_channel.send(content=f"Welcome {member.mention}!", embed=embed, view=VoiceControlView())
 
     # 3. Cleanup: Check if the channel the user left was a temp channel
-    if before.channel and before.channel.id in temp_channels:
-        # If the channel is now empty, delete it
-        if len(before.channel.members) == 0:
-            await before.channel.delete()
-            temp_channels.remove(before.channel.id)
+    if before.channel:
+        # Check: Is this channel inside our designated Temp Category?
+        if before.channel.category_id == cat_id:
+            # Safety: Make sure we aren't deleting the Hub channel itself
+            if before.channel.id != hub_id:
+                # If the channel is now empty, delete it
+                if len(before.channel.members) == 0:
+                    try:
+                        await before.channel.delete(reason="Temporary channel empty.")
+                    except discord.NotFound:
+                        # Channel already deleted by the Delete Button
+                        pass
+                    except discord.Forbidden:
+                        print(f"❌ Missing Permissions to delete channel in {member.guild.name}")
 
 # Rename Interface
 class RenameModal(discord.ui.Modal, title="Rename Your Channel"):
@@ -231,6 +238,30 @@ class VoiceControlView(discord.ui.View):
     async def limit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Open the Limit Modal
         await interaction.response.send_modal(LimitModal())
+
+    # Delete Button
+    @discord.ui.button(label="Delete Room", style=discord.ButtonStyle.danger, custom_id="delete_vc")
+    async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 1. Check if the user is in the voice channel
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            return await interaction.response.send_message("❌ You must be in your voice channel to delete it!", ephemeral=True)
+
+        channel = interaction.user.voice.channel
+
+        # 2. Security Check: Ensure they are actually in a TEMPORARY channel 
+        # (This prevents them from accidentally deleting the Hub or server channels)
+        # We check if the channel is inside our special category
+        data = load_all_configs()
+        guild_data = data.get(str(interaction.guild.id))
+        
+        if guild_data and channel.category_id == guild_data.get("cat_id"):
+            # 3. Acknowledge the interaction before the channel vanishes
+            await interaction.response.send_message("💥 Deleting channel...", ephemeral=True)
+            
+            # 4. Delete the channel
+            await channel.delete(reason=f"Owner {interaction.user} requested deletion via button.")
+        else:
+            await interaction.response.send_message("⚠️ You can only delete temporary channels created by this bot.", ephemeral=True)
 
 # Running the Bot
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
