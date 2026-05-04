@@ -50,8 +50,33 @@ bot = commands.Bot(command_prefix="/", intents=intents)
 @bot.event
 async def on_ready():
     bot.add_view(VoiceControlView())
-    await bot.tree.sync()
     print(f'Logged in as {bot.user.name}')
+
+    # Cleans all the Ghost channels when bot restarts
+    configs = load_all_configs()
+    
+    for guild in bot.guilds:
+        guild_id = str(guild.id)
+        if guild_id in configs:
+            cat_id = configs[guild_id].get("cat_id")
+            hub_id = configs[guild_id].get("hub_id")
+            
+            category = guild.get_channel(cat_id)
+            if category:
+                for channel in category.voice_channels:
+                    # Don't delete the Hub!
+                    if channel.id == hub_id:
+                        continue
+                    
+                    # If the channel is empty, delete it
+                    if len(channel.members) == 0:
+                        try:
+                            await channel.delete(reason="Cleanup: Ghost channel found on startup.")
+                            print(f"🧹 Cleaned up ghost channel: {channel.name}")
+                        except discord.Forbidden:
+                            print(f"❌ No permission to delete {channel.name}")
+                        except discord.NotFound:
+                            pass
 
 # /setup command
 @bot.tree.command(name="setup", description="Set the Hub channel and Category for temporary VCs")
