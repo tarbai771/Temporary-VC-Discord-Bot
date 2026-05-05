@@ -180,6 +180,32 @@ async def on_voice_state_update(member, before, after):
                     except discord.Forbidden:
                         print(f"❌ Missing Permissions to delete channel in {member.guild.name}")
 
+# This Shows a list of users that we can use in our interface for stuff like kick, mute, ban etc.
+class UniversalMemberSelect(discord.ui.Select):
+    def __init__(self, members, action_func, placeholder):
+        # We store the function we want to run later
+        self.action_func = action_func
+        
+        options = [
+            discord.SelectOption(label=m.display_name, value=str(m.id)) 
+            for m in members if not m.bot
+        ]
+        
+        super().__init__(placeholder=placeholder, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        # Get the selected member
+        member_id = int(self.values[0])
+        member = interaction.guild.get_member(member_id)
+        
+        # Run the specific function we passed in!
+        await self.action_func(interaction, member)
+
+class UniversalSelectView(discord.ui.View):
+    def __init__(self, members, action_func, placeholder="Select a member..."):
+        super().__init__(timeout=60)
+        self.add_item(UniversalMemberSelect(members, action_func, placeholder))
+
 # Rename Interface
 class RenameModal(discord.ui.Modal, title="Rename Your Channel"):
     # This is the text box in the pop-up
@@ -228,65 +254,125 @@ class LimitModal(discord.ui.Modal, title="Set User Limit"):
         else:
             await interaction.response.send_message("❌ You must be in the voice channel to change the limit!", ephemeral=True)
 
+# Kick button
+@staticmethod
+async def kick_action(interaction, member):
+    channel = interaction.user.voice.channel
+    await member.move_to(None)
+    await channel.set_permissions(member, connect=False)
+    await interaction.response.edit_message(content=f"👢 Kicked **{member.display_name}**", view=None)
+
+# Ownership Transfer
+@staticmethod
+async def transfer_action(interaction: discord.Interaction, member: discord.Member):
+    channel = interaction.user.voice.channel
+    
+    # 1. Update the channel name to reflect the new owner
+    try:
+        await channel.edit(name=f"🔊 {member.display_name}'s Room")
+        
+        # 2. Update permissions: Give the new owner 'Manage Channels' 
+        # and remove it from the old owner if you want a total transfer
+        await channel.set_permissions(member, connect=True, manage_channels=True, move_members=True)
+        await channel.set_permissions(interaction.user, connect=True, manage_channels=False)
+        
+        await interaction.response.edit_message(
+            content=f"👑 Ownership transferred to **{member.display_name}**!", 
+            view=None
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message("❌ I don't have permission to rename this channel.", ephemeral=True)
+
 # Interface
 class VoiceControlView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None) # Persistent view
 
+    # --- HELPER: SECURITY CHECK ---
+    def is_owner(self, interaction: discord.Interaction):
+        """Checks if the user is the current rightful owner of the VC."""
+        # Check 1: Does their name match the channel name?
+        name_match = interaction.user.display_name.lower() in interaction.channel.name.lower()
+        # Check 2: Do they have 'Manage Channels' (granted by Transfer button)?
+        has_perm = interaction.channel.permissions_for(interaction.user).manage_channels
+        
+        return name_match or has_perm
+
     # Lock Button
     @discord.ui.button(label="Lock", style=discord.ButtonStyle.danger, custom_id="lock_vc")
     async def lock_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Only allow the person in the VC to control it
-        if interaction.user.voice and interaction.user.voice.channel:
-            await interaction.user.voice.channel.set_permissions(interaction.guild.default_role, connect=False)
-            await interaction.response.send_message("🔒 Room locked!", ephemeral=True)
-        else:
-            await interaction.response.send_message("❌ You must be in the VC to lock it.", ephemeral=True)
+        # Only allow the owner to control VC
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("⚠️ Only the current owner can lock the room!", ephemeral=True)
+            
+        await interaction.channel.set_permissions(interaction.guild.default_role, connect=False)
+        await interaction.response.send_message("🔒 Room locked!", ephemeral=True)
 
     # Unlock Button
     @discord.ui.button(label="Unlock", style=discord.ButtonStyle.success, custom_id="unlock_vc")
     async def unlock_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user.voice and interaction.user.voice.channel:
-            await interaction.user.voice.channel.set_permissions(interaction.guild.default_role, connect=True)
-            await interaction.response.send_message("🔓 Room unlocked!", ephemeral=True)
-        else:
-            await interaction.response.send_message("❌ You must be in the VC to unlock it.", ephemeral=True)
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("⚠️ Only the current owner can unlock the room!", ephemeral=True)
+            
+        await interaction.channel.set_permissions(interaction.guild.default_role, connect=True)
+        await interaction.response.send_message("🔓 Room unlocked!", ephemeral=True)
 
     # Rename Button
     @discord.ui.button(label="Rename", style=discord.ButtonStyle.secondary, custom_id="rename_vc")
     async def rename_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Instead of sending a message, we send the Modal pop-up
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("⚠️ Only the current owner can rename this room!", ephemeral=True)
+            
         await interaction.response.send_modal(RenameModal())
 
     # Limit Button
     @discord.ui.button(label="Set Limit", style=discord.ButtonStyle.primary, custom_id="limit_vc")
     async def limit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Open the Limit Modal
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("⚠️ Only the current owner can set limits!", ephemeral=True)
+            
         await interaction.response.send_modal(LimitModal())
 
     # Delete Button
     @discord.ui.button(label="Delete Room", style=discord.ButtonStyle.danger, custom_id="delete_vc")
     async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 1. Check if the user is in the voice channel
-        if not interaction.user.voice or not interaction.user.voice.channel:
-            return await interaction.response.send_message("❌ You must be in your voice channel to delete it!", ephemeral=True)
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("⚠️ Only the current owner can delete this room!", ephemeral=True)
 
-        channel = interaction.user.voice.channel
-
-        # 2. Security Check: Ensure they are actually in a TEMPORARY channel 
-        # (This prevents them from accidentally deleting the Hub or server channels)
-        # We check if the channel is inside our special category
         data = load_all_configs()
         guild_data = data.get(str(interaction.guild.id))
         
-        if guild_data and channel.category_id == guild_data.get("cat_id"):
-            # 3. Acknowledge the interaction before the channel vanishes
+        if guild_data and interaction.channel.category_id == guild_data.get("cat_id"):
             await interaction.response.send_message("💥 Deleting channel...", ephemeral=True)
-            
-            # 4. Delete the channel
-            await channel.delete(reason=f"Owner {interaction.user} requested deletion via button.")
+            await interaction.channel.delete(reason="Owner requested deletion via button.")
         else:
-            await interaction.response.send_message("⚠️ You can only delete temporary channels created by this bot.", ephemeral=True)
+            await interaction.response.send_message("⚠️ Error: This is not a temporary channel.", ephemeral=True)
+
+    # Kick Button
+    @discord.ui.button(label="Kick", style=discord.ButtonStyle.secondary, custom_id="kick_vc")
+    async def kick_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("⚠️ Only the owner can kick members!", ephemeral=True)
+            
+        members = [m for m in interaction.channel.members if m != interaction.user and not m.bot]
+        if not members:
+            return await interaction.response.send_message("No one else is here!", ephemeral=True)
+        
+        view = UniversalSelectView(members, kick_action, "Who should be kicked?")
+        await interaction.response.send_message("Select a member:", view=view, ephemeral=True)
+
+    # Ownership transfer
+    @discord.ui.button(label="Transfer Owner", style=discord.ButtonStyle.primary, emoji="👑", custom_id="transfer_vc")
+    async def transfer_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("⚠️ Only the current owner can transfer ownership!", ephemeral=True)
+
+        members = [m for m in interaction.channel.members if m != interaction.user and not m.bot]
+        if not members:
+            return await interaction.response.send_message("❌ No one else is here to take ownership!", ephemeral=True)
+
+        view = UniversalSelectView(members, transfer_action, "Pick the new owner...")
+        await interaction.response.send_message("Select a member:", view=view, ephemeral=True)
 
 # Running the Bot
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
