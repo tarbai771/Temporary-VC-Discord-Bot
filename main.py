@@ -361,7 +361,7 @@ class VoiceControlView(discord.ui.View):
         view = UniversalSelectView(members, kick_action, "Who should be kicked?")
         await interaction.response.send_message("Select a member:", view=view, ephemeral=True)
 
-    # Ownership transfer
+    # Ownership transfer button
     @discord.ui.button(label="Transfer Owner", style=discord.ButtonStyle.primary, emoji="👑", custom_id="transfer_vc")
     async def transfer_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
@@ -373,6 +373,44 @@ class VoiceControlView(discord.ui.View):
 
         view = UniversalSelectView(members, transfer_action, "Pick the new owner...")
         await interaction.response.send_message("Select a member:", view=view, ephemeral=True)
+
+    # Claim ownership button
+    @discord.ui.button(label="Claim Ownership", style=discord.ButtonStyle.success, emoji="🙋‍♂️", custom_id="claim_vc")
+    async def claim_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        channel = interaction.channel
+        
+        # 1. Verification: User must be in the VC to claim it
+        if interaction.user not in channel.members:
+            return await interaction.response.send_message("⚠️ You must be in the voice channel to claim it!", ephemeral=True)
+
+        # 2. Find the current owner
+        # We look for the member who has 'manage_channels' enabled in overwrites
+        current_owner = None
+        for target, overwrite in channel.overwrites.items():
+            if isinstance(target, discord.Member) and overwrite.manage_channels is True:
+                current_owner = target
+                break
+
+        # 3. Check if the owner is actually gone
+        # If there is no owner found, or the owner is no longer in the VC members list
+        if current_owner and current_owner in channel.members:
+            return await interaction.response.send_message(f"❌ The owner (**{current_owner.display_name}**) is still in the room!", ephemeral=True)
+
+        # 4. Takeover Logic
+        # Remove perms from the old owner (if they exist)
+        if current_owner:
+            await channel.set_permissions(current_owner, overwrite=None)
+        
+        # Give perms to the new owner (This satisfies your 'has_perm' check)
+        await channel.set_permissions(interaction.user, manage_channels=True, move_members=True, connect=True)
+        
+        # Update the name (This satisfies your 'name_match' check)
+        try:
+            await channel.edit(name=f"🔊 {interaction.user.display_name}'s Room")
+        except discord.HTTPException:
+            pass # Handle Discord rate limits
+
+        await interaction.response.send_message(f"👑 **{interaction.user.display_name}** is the new owner of this room!", ephemeral=False)
 
 # Running the Bot
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
