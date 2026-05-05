@@ -124,7 +124,7 @@ async def setup(interaction: discord.Interaction):
 # Creating Temp VC
 @bot.event
 async def on_voice_state_update(member, before, after):
-    # 1. Loading Category and Hub ID
+    # Loading Category and Hub ID
     configs = load_all_configs()
 
     # We convert the ID to a string because JSON keys are always strings
@@ -139,7 +139,7 @@ async def on_voice_state_update(member, before, after):
     hub_id = guild_data.get("hub_id")
     cat_id = guild_data.get("cat_id")
 
-    # 2. Check if user joined the "Join to Create" Hub
+    # Check if user joined the "Join to Create" Hub
     if after.channel and after.channel.id == hub_id:
         guild = member.guild
         category = guild.get_channel(cat_id)
@@ -156,7 +156,7 @@ async def on_voice_state_update(member, before, after):
 
         await member.move_to(new_channel) # Move the member to the new channel
 
-        # NEW: Send the interface message
+        # Send the interface message
         embed = discord.Embed(
             title="Voice Control Panel",
             description="Use the buttons below to manage your temporary channel.",
@@ -164,7 +164,7 @@ async def on_voice_state_update(member, before, after):
         )
         await new_channel.send(content=f"Welcome {member.mention}!", embed=embed, view=VoiceControlView())
 
-    # 3. Cleanup: Check if the channel the user left was a temp channel
+    # Cleanup: Check if the channel the user left was a temp channel
     if before.channel:
         # Check: Is this channel inside our designated Temp Category?
         if before.channel.category_id == cat_id:
@@ -180,7 +180,7 @@ async def on_voice_state_update(member, before, after):
                     except discord.Forbidden:
                         print(f"❌ Missing Permissions to delete channel in {member.guild.name}")
 
-# This Shows a list of users that we can use in our interface for stuff like kick, mute, ban etc.
+# This Shows a drop-down list of users that are in the voice channel
 class UniversalMemberSelect(discord.ui.Select):
     def __init__(self, members, action_func, placeholder):
         # We store the function we want to run later
@@ -267,12 +267,11 @@ async def kick_action(interaction, member):
 async def transfer_action(interaction: discord.Interaction, member: discord.Member):
     channel = interaction.user.voice.channel
     
-    # 1. Update the channel name to reflect the new owner
+    # Update the channel name to the new owner name
     try:
         await channel.edit(name=f"🔊 {member.display_name}'s Room")
         
-        # 2. Update permissions: Give the new owner 'Manage Channels' 
-        # and remove it from the old owner if you want a total transfer
+        # Update permissions: Give the new owner 'Manage Channels' and remove it from the old owner
         await channel.set_permissions(member, connect=True, manage_channels=True, move_members=True)
         await channel.set_permissions(interaction.user, connect=True, manage_channels=False)
         
@@ -282,6 +281,32 @@ async def transfer_action(interaction: discord.Interaction, member: discord.Memb
         )
     except discord.Forbidden:
         await interaction.response.send_message("❌ I don't have permission to rename this channel.", ephemeral=True)
+
+# Block Action
+async def block_action(interaction: discord.Interaction, member: discord.Member):
+    channel = interaction.channel
+    
+    # Prevent the owner from blocking themselves
+    if member == interaction.user:
+        return await interaction.response.send_message("❌ You can't block yourself!", ephemeral=True)
+
+    # Set the 'Connect' permission to False for this specific member
+    await channel.set_permissions(member, connect=False)
+    
+    # If they are currently in the VC, kick them out so the block takes effect
+    if member in channel.members:
+        await member.move_to(None)
+
+    await interaction.response.edit_message(
+        content=f"🚫 **{member.display_name}** has been blocked from this room.", 
+        view=None
+    )
+
+# Unblock Action
+async def unblock_action(interaction: discord.Interaction, member: discord.Member):
+    # Removing the overwrite allows them to join again
+    await interaction.channel.set_permissions(member, overwrite=None)
+    await interaction.response.edit_message(content=f"✅ **{member.display_name}** is now unblocked.", view=None)
 
 # Interface
 class VoiceControlView(discord.ui.View):
@@ -294,6 +319,7 @@ class VoiceControlView(discord.ui.View):
         # Check 1: Does their name match the channel name?
         name_match = interaction.user.display_name.lower() in interaction.channel.name.lower()
         # Check 2: Do they have 'Manage Channels' (granted by Transfer button)?
+        # Since we have rename feature, Check 1 can fail sometimes. That's why we also need check 2
         has_perm = interaction.channel.permissions_for(interaction.user).manage_channels
         
         return name_match or has_perm
@@ -379,38 +405,75 @@ class VoiceControlView(discord.ui.View):
     async def claim_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         channel = interaction.channel
         
-        # 1. Verification: User must be in the VC to claim it
+        # Verification: User must be in the VC to claim it
         if interaction.user not in channel.members:
             return await interaction.response.send_message("⚠️ You must be in the voice channel to claim it!", ephemeral=True)
 
-        # 2. Find the current owner
-        # We look for the member who has 'manage_channels' enabled in overwrites
+        # Find the current owner
         current_owner = None
         for target, overwrite in channel.overwrites.items():
             if isinstance(target, discord.Member) and overwrite.manage_channels is True:
                 current_owner = target
                 break
 
-        # 3. Check if the owner is actually gone
-        # If there is no owner found, or the owner is no longer in the VC members list
+        # Check if the owner is actually gone
         if current_owner and current_owner in channel.members:
             return await interaction.response.send_message(f"❌ The owner (**{current_owner.display_name}**) is still in the room!", ephemeral=True)
 
-        # 4. Takeover Logic
         # Remove perms from the old owner (if they exist)
         if current_owner:
             await channel.set_permissions(current_owner, overwrite=None)
         
-        # Give perms to the new owner (This satisfies your 'has_perm' check)
+        # Give perms to the new owner (This satisfies the 'has_perm' check)
         await channel.set_permissions(interaction.user, manage_channels=True, move_members=True, connect=True)
         
-        # Update the name (This satisfies your 'name_match' check)
+        # Update the name (This satisfies the 'name_match' check)
         try:
             await channel.edit(name=f"🔊 {interaction.user.display_name}'s Room")
         except discord.HTTPException:
             pass # Handle Discord rate limits
 
         await interaction.response.send_message(f"👑 **{interaction.user.display_name}** is the new owner of this room!", ephemeral=False)
+
+    # Block Button
+    @discord.ui.button(label="Block", style=discord.ButtonStyle.secondary, emoji="🚫", custom_id="block_vc")
+    async def block_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Your existing is_owner check
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("⚠️ Only the owner can block users!", ephemeral=True)
+
+        # Get members in the guild to block (we can't just look in the VC, 
+        # because you might want to block someone before they join!)
+        # To keep the list clean, let's look at people recently active or in the VC
+        members = [m for m in interaction.guild.members if not m.bot and m != interaction.user]
+        
+        # NOTE: If your server is huge, you might want to only show people 
+        # currently in the VC to keep the dropdown short:
+        # members = [m for m in interaction.channel.members if m != interaction.user]
+
+        if not members:
+            return await interaction.response.send_message("No one found to block.", ephemeral=True)
+
+        view = UniversalSelectView(members, block_action, "Who should be blocked from joining?")
+        await interaction.response.send_message("Select a member to block:", view=view, ephemeral=True)
+
+    # Unblock Button
+    @discord.ui.button(label="Unblock", style=discord.ButtonStyle.secondary, emoji="✅", custom_id="unblock_vc")
+    async def unblock_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("⚠️ Only the owner can unblock users!", ephemeral=True)
+
+        # Look for members who currently have a 'connect=False' overwrite
+        blocked_members = []
+        for target, overwrite in interaction.channel.overwrites.items():
+            if isinstance(target, discord.Member) and overwrite.connect is False:
+                blocked_members.append(target)
+
+        if not blocked_members:
+            return await interaction.response.send_message("No one is currently blocked.", ephemeral=True)
+
+        view = UniversalSelectView(blocked_members, unblock_action, "Who should be unblocked?")
+        await interaction.response.send_message("Select a member to unblock:", view=view, ephemeral=True)
 
 # Running the Bot
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
