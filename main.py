@@ -206,6 +206,59 @@ class UniversalSelectView(discord.ui.View):
         super().__init__(timeout=60)
         self.add_item(UniversalMemberSelect(members, action_func, placeholder))
 
+# Privacy Button Interface
+class PrivacySelectView(discord.ui.View):
+    def __init__(self, owner_check_func):
+        super().__init__(timeout=60)
+        self.is_owner = owner_check_func # Pass the owner check logic from the main view
+
+    @discord.ui.select(
+        placeholder="🛡️ Choose a Privacy Option...",
+        options=[
+            discord.SelectOption(label="Lock Room", value="lock", emoji="🔒"),
+            discord.SelectOption(label="Unlock Room", value="unlock", emoji="🔓"),
+            discord.SelectOption(label="Disable Chat", value="hide_chat", emoji="🔇"),
+            discord.SelectOption(label="Enable Chat", value="show_chat", emoji="💬")
+        ]
+    )
+    async def privacy_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("⚠️ Only the owner can do this!", ephemeral=True)
+
+        choice = select.values[0]
+        channel = interaction.channel
+        everyone = interaction.guild.default_role
+        owner = interaction.user
+
+        # 1. Get the CURRENT overwrites for @everyone so we don't reset them
+        current_everyone_overwrites = channel.overwrites_for(everyone)
+        
+        # 2. Always ensure the Owner has an explicit ALLOW override.
+        # This prevents the Owner from being locked/muted by their own buttons.
+        await channel.set_permissions(owner, connect=True, send_messages=True, manage_channels=True)
+
+        if choice == "lock":
+            current_everyone_overwrites.connect = False
+            msg = "🔒 Room locked! New people cannot join."
+        
+        elif choice == "unlock":
+            current_everyone_overwrites.connect = True
+            msg = "🔓 Room unlocked!"
+
+        elif choice == "hide_chat":
+            current_everyone_overwrites.send_messages = False
+            msg = "🔇 Chat disabled for everyone else!"
+
+        elif choice == "show_chat":
+            current_everyone_overwrites.send_messages = True
+            msg = "💬 Chat enabled for everyone!"
+
+        # 3. Apply the updated object back to the channel
+        # This ensures if it was already locked, it STAYS locked when you toggle chat.
+        await channel.set_permissions(everyone, overwrite=current_everyone_overwrites)
+
+        await interaction.response.edit_message(content=msg, view=None)
+
 # Rename Interface
 class RenameModal(discord.ui.Modal, title="Rename Your Channel"):
     # This is the text box in the pop-up
@@ -324,25 +377,6 @@ class VoiceControlView(discord.ui.View):
         
         return name_match or has_perm
 
-    # Lock Button
-    @discord.ui.button(label="Lock", style=discord.ButtonStyle.danger, custom_id="lock_vc")
-    async def lock_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Only allow the owner to control VC
-        if not self.is_owner(interaction):
-            return await interaction.response.send_message("⚠️ Only the current owner can lock the room!", ephemeral=True)
-            
-        await interaction.channel.set_permissions(interaction.guild.default_role, connect=False)
-        await interaction.response.send_message("🔒 Room locked!", ephemeral=True)
-
-    # Unlock Button
-    @discord.ui.button(label="Unlock", style=discord.ButtonStyle.success, custom_id="unlock_vc")
-    async def unlock_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.is_owner(interaction):
-            return await interaction.response.send_message("⚠️ Only the current owner can unlock the room!", ephemeral=True)
-            
-        await interaction.channel.set_permissions(interaction.guild.default_role, connect=True)
-        await interaction.response.send_message("🔓 Room unlocked!", ephemeral=True)
-
     # Rename Button
     @discord.ui.button(label="Rename", style=discord.ButtonStyle.secondary, custom_id="rename_vc")
     async def rename_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -386,6 +420,16 @@ class VoiceControlView(discord.ui.View):
         
         view = UniversalSelectView(members, kick_action, "Who should be kicked?")
         await interaction.response.send_message("Select a member:", view=view, ephemeral=True)
+
+    # Privacy Dropdown Menu
+    @discord.ui.button(label="Privacy", style=discord.ButtonStyle.gray, emoji="🛡️", custom_id="privacy_menu_btn")
+    async def privacy_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("⚠️ Only the owner can change privacy!", ephemeral=True)
+        
+        # We pass self.is_owner so the sub-menu can still verify the user
+        view = PrivacySelectView(self.is_owner)
+        await interaction.response.send_message("Select a privacy setting:", view=view, ephemeral=True)
 
     # Ownership transfer button
     @discord.ui.button(label="Transfer Owner", style=discord.ButtonStyle.primary, emoji="👑", custom_id="transfer_vc")
