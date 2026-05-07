@@ -217,8 +217,11 @@ class PrivacySelectView(discord.ui.View):
         options=[
             discord.SelectOption(label="Lock Room", value="lock", emoji="🔒"),
             discord.SelectOption(label="Unlock Room", value="unlock", emoji="🔓"),
-            discord.SelectOption(label="Disable Chat", value="hide_chat", emoji="🔇"),
-            discord.SelectOption(label="Enable Chat", value="show_chat", emoji="💬")
+            discord.SelectOption(label="Invisible (Trusted Only)", value="invisible", emoji="👻"),
+            discord.SelectOption(label="Visible (Everyone)", value="visible", emoji="👁️"),
+            discord.SelectOption(label="Close Chat", value="close_chat", emoji="💬", description="Only Trusted users can type."),
+            discord.SelectOption(label="Enable Chat", value="show_chat", emoji="💬"),
+            discord.SelectOption(label="Disable Chat", value="disable_chat", emoji="🔇", description="No one can type.")
         ]
     )
     async def privacy_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
@@ -230,12 +233,11 @@ class PrivacySelectView(discord.ui.View):
         everyone = interaction.guild.default_role
         owner = interaction.user
 
-        # 1. Get the CURRENT overwrites for @everyone so we don't reset them
+        # 1. Preserve current settings
         current_everyone_overwrites = channel.overwrites_for(everyone)
         
-        # 2. Always ensure the Owner has an explicit ALLOW override.
-        # This prevents the Owner from being locked/muted by their own buttons.
-        await channel.set_permissions(owner, connect=True, send_messages=True, manage_channels=True)
+        # 2. Ensure Owner and Bot don't lose access
+        await channel.set_permissions(owner, view_channel=True, connect=True, send_messages=True)
 
         if choice == "lock":
             current_everyone_overwrites.connect = False
@@ -245,16 +247,50 @@ class PrivacySelectView(discord.ui.View):
             current_everyone_overwrites.connect = True
             msg = "🔓 Room unlocked!"
 
-        elif choice == "hide_chat":
+        elif choice == "invisible":
+            current_everyone_overwrites.view_channel = False
+            msg = "👻 Room is now invisible to everyone except Trusted users!"
+
+        elif choice == "visible":
+            current_everyone_overwrites.view_channel = True
+            msg = "👁️ Room is now visible to everyone."
+
+        elif choice == "close_chat":
+            # We set @everyone to False. 
+            # Trusted users can still type because their personal override is True.
             current_everyone_overwrites.send_messages = False
-            msg = "🔇 Chat disabled for everyone else!"
+            msg = "🔒💬 Chat is now CLOSED. Only Trusted users and the owner can type!"
+
+            # Reset Trusted Users to TRUE so they can bypass the @everyone mute
+            for target, overwrite in channel.overwrites.items():
+                if isinstance(target, discord.Member) and target != owner:
+                    # If they have 'Connect' allowed, they are a trusted user
+                    if overwrite.connect is True:
+                        overwrite.send_messages = True
+                        await channel.set_permissions(target, overwrite=overwrite)
 
         elif choice == "show_chat":
             current_everyone_overwrites.send_messages = True
-            msg = "💬 Chat enabled for everyone!"
+            msg = "💬 Chat enabled!"
 
-        # 3. Apply the updated object back to the channel
-        # This ensures if it was already locked, it STAYS locked when you toggle chat.
+            # Reset Trusted Users to NONE (Default) 
+            # This makes them follow the @everyone 'True' setting again
+            for target, overwrite in channel.overwrites.items():
+                if isinstance(target, discord.Member) and target != owner:
+                    overwrite.send_messages = None 
+                    await channel.set_permissions(target, overwrite=overwrite)
+
+        elif choice == "disable_chat":
+            current_everyone_overwrites.send_messages = False
+            msg = "🔇 Chat disabled!"
+
+            # Set every Trusted User to False so they are muted too
+            for target, overwrite in channel.overwrites.items():
+                if isinstance(target, discord.Member) and target != owner:
+                    overwrite.send_messages = False
+                    await channel.set_permissions(target, overwrite=overwrite)
+
+        # 3. Apply changes to @everyone
         await channel.set_permissions(everyone, overwrite=current_everyone_overwrites)
 
         await interaction.response.edit_message(content=msg, view=None)
@@ -307,7 +343,57 @@ class LimitModal(discord.ui.Modal, title="Set User Limit"):
         else:
             await interaction.response.send_message("❌ You must be in the voice channel to change the limit!", ephemeral=True)
 
-# Kick button
+# Invite Button Interface
+class InviteResponseView(discord.ui.View):
+    def __init__(self, target_member: discord.Member, destination_channel: discord.VoiceChannel):
+        super().__init__(timeout=300) # 5 minute expiry
+        self.target_member = target_member
+        self.destination_channel = destination_channel
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="✅")
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # 1. Verify the person clicking is the person invited
+        if interaction.user != self.target_member:
+            return await interaction.response.send_message("This invite isn't for you!", ephemeral=True)
+
+        # 2. Check if they are actually in a voice channel to be "dragged"
+        if not interaction.user.voice:
+            return await interaction.response.send_message("❌ You must be in a voice channel first so I can move you!", ephemeral=True)
+
+        # 3. Move them
+        try:
+            await interaction.user.move_to(self.destination_channel)
+            await interaction.response.edit_message(content=f"✅ {interaction.user.mention} has joined the room!", view=None)
+        except discord.Forbidden:
+            await interaction.response.send_message("I don't have permission to move you!", ephemeral=True)
+
+    @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger, emoji="❌")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.target_member:
+            return await interaction.response.send_message("This invite isn't for you!", ephemeral=True)
+            
+        await interaction.response.edit_message(content=f"❌ {interaction.user.mention} declined the invite.", view=None)
+
+# Invite action
+async def invite_action(interaction: discord.Interaction, member: discord.Member):
+    # The channel the owner is currently in
+    channel = interaction.channel
+    
+    # Check if the target is already in the VC
+    if member in channel.members:
+        return await interaction.response.send_message(f"{member.display_name} is already here!", ephemeral=True)
+
+    # Send the interactive invite
+    view = InviteResponseView(target_member=member, destination_channel=channel)
+    
+    # We send this to the channel where the owner clicked the button
+    await interaction.response.edit_message(content=f"Inviting {member.mention}...", view=None)
+    await interaction.channel.send(
+        content=f"Hey {member.mention}! **{interaction.user.display_name}** has invited you to join their voice channel.",
+        view=view
+    )
+
+# Kick action
 @staticmethod
 async def kick_action(interaction, member):
     channel = interaction.user.voice.channel
@@ -315,7 +401,32 @@ async def kick_action(interaction, member):
     await channel.set_permissions(member, connect=False)
     await interaction.response.edit_message(content=f"👢 Kicked **{member.display_name}**", view=None)
 
-# Ownership Transfer
+# trust action
+async def trust_action(interaction: discord.Interaction, member: discord.Member):
+    channel = interaction.channel
+    
+    # Give the user explicit 'Connect' permissions
+    # This bypasses the @everyone 'Connect: False' lock
+    await channel.set_permissions(member, connect=True, send_messages=True)
+
+    await interaction.response.edit_message(
+        content=f"⭐ **{member.display_name}** is now a Trusted User and can join even when locked!", 
+        view=None
+    )
+
+# Untrust action
+async def untrust_action(interaction: discord.Interaction, member: discord.Member):
+    channel = interaction.channel
+    
+    # Setting the overwrite to None, So removes the user-specific 'Trust'
+    await channel.set_permissions(member, overwrite=None)
+
+    await interaction.response.edit_message(
+        content=f"🤝 **{member.display_name}** is no longer a Trusted User.", 
+        view=None
+    )
+
+# Ownership Transfer action
 @staticmethod
 async def transfer_action(interaction: discord.Interaction, member: discord.Member):
     channel = interaction.user.voice.channel
@@ -420,6 +531,58 @@ class VoiceControlView(discord.ui.View):
         
         view = UniversalSelectView(members, kick_action, "Who should be kicked?")
         await interaction.response.send_message("Select a member:", view=view, ephemeral=True)
+
+    # invite Button
+    @discord.ui.button(label="Invite", style=discord.ButtonStyle.blurple, emoji="👤", custom_id="invite_user_btn")
+    async def invite_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("⚠️ Only the owner can invite users!", ephemeral=True)
+
+        # Get all members except bots and the owner themselves
+        members = [m for m in interaction.guild.members if not m.bot and m != interaction.user]
+        
+        if not members:
+            return await interaction.response.send_message("No users found to invite.", ephemeral=True)
+
+        # Reusing your UniversalSelectView
+        view = UniversalSelectView(members, invite_action, "Who would you like to invite?")
+        await interaction.response.send_message("Select a user to invite:", view=view, ephemeral=True)
+
+    # Trust Button
+    @discord.ui.button(label="Trust", style=discord.ButtonStyle.blurple, emoji="⭐", custom_id="trust_user_btn")
+    async def trust_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("⚠️ Only the owner can trust users!", ephemeral=True)
+
+        # Get all members (excluding bots and the owner)
+        members = [m for m in interaction.guild.members if not m.bot and m != interaction.user]
+        
+        if not members:
+            return await interaction.response.send_message("No users found to trust.", ephemeral=True)
+
+        view = UniversalSelectView(members, trust_action, "Who should be a Trusted User?")
+        await interaction.response.send_message("Select a user to trust:", view=view, ephemeral=True)
+
+    # Untrust Button
+    @discord.ui.button(label="Untrust", style=discord.ButtonStyle.secondary, emoji="❌", custom_id="untrust_user_btn")
+    async def untrust_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("⚠️ Only the owner can manage trusted users!", ephemeral=True)
+
+        # Find users who have specific overwrites in this channel
+        trusted_members = []
+        for target, overwrite in interaction.channel.overwrites.items():
+            # Check if the target is a Member and has Connect allowed
+            if isinstance(target, discord.Member) and overwrite.connect is True:
+                # We skip the owner and bots
+                if target != interaction.user and not target.bot:
+                    trusted_members.append(target)
+
+        if not trusted_members:
+            return await interaction.response.send_message("There are no trusted users to remove.", ephemeral=True)
+
+        view = UniversalSelectView(trusted_members, untrust_action, "Who should lose Trusted status?")
+        await interaction.response.send_message("Select a user to untrust:", view=view, ephemeral=True)
 
     # Privacy Dropdown Menu
     @discord.ui.button(label="Privacy", style=discord.ButtonStyle.gray, emoji="🛡️", custom_id="privacy_menu_btn")
