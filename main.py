@@ -49,6 +49,15 @@ bot = commands.Bot(command_prefix="/", intents=intents)
 # On ready Event
 @bot.event
 async def on_ready():
+
+    # Syncing commands with discord globally
+    # It may take 1 hour for commands to appear when you first sync the commands
+    try:
+        synced = await bot.tree.sync()
+        print(f"Successfully synced {len(synced)} commands.")
+    except Exception as e:
+        print(f"Error syncing commands: {e}")
+
     bot.add_view(VoiceControlView())
     print(f'Logged in as {bot.user.name}')
 
@@ -160,9 +169,12 @@ async def on_voice_state_update(member, before, after):
         embed = discord.Embed(
             title="Voice Control Panel",
             description="Use the buttons below to manage your temporary channel.",
-            color=discord.Color.blue()
+            color=discord.Color.default()
         )
-        await new_channel.send(content=f"Welcome {member.mention}!", embed=embed, view=VoiceControlView())
+        file = discord.File("mist_interface.png", filename="mist_interface.png")
+        embed.set_image(url="attachment://mist_interface.png")
+
+        await new_channel.send(content=f"Welcome {member.mention}!", embed=embed, file=file, view=VoiceControlView())
 
     # Cleanup: Check if the channel the user left was a temp channel
     if before.channel:
@@ -489,7 +501,7 @@ class VoiceControlView(discord.ui.View):
         return name_match or has_perm
 
     # Rename Button
-    @discord.ui.button(label="Rename", style=discord.ButtonStyle.secondary, custom_id="rename_vc")
+    @discord.ui.button(emoji="<:rename2:1502664105478066288>", style=discord.ButtonStyle.gray, custom_id="rename_vc")
     async def rename_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
             return await interaction.response.send_message("⚠️ Only the current owner can rename this room!", ephemeral=True)
@@ -497,15 +509,25 @@ class VoiceControlView(discord.ui.View):
         await interaction.response.send_modal(RenameModal())
 
     # Limit Button
-    @discord.ui.button(label="Set Limit", style=discord.ButtonStyle.primary, custom_id="limit_vc")
+    @discord.ui.button(emoji="<:limit2:1502664062163488829>", style=discord.ButtonStyle.gray, custom_id="limit_vc")
     async def limit_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
             return await interaction.response.send_message("⚠️ Only the current owner can set limits!", ephemeral=True)
             
         await interaction.response.send_modal(LimitModal())
 
+    # Privacy Dropdown Menu
+    @discord.ui.button(emoji="<:privacy2:1502664084028653628>", style=discord.ButtonStyle.gray, custom_id="privacy_menu_btn")
+    async def privacy_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("⚠️ Only the owner can change privacy!", ephemeral=True)
+        
+        # We pass self.is_owner so the sub-menu can still verify the user
+        view = PrivacySelectView(self.is_owner)
+        await interaction.response.send_message("Select a privacy setting:", view=view, ephemeral=True)
+
     # Delete Button
-    @discord.ui.button(label="Delete Room", style=discord.ButtonStyle.danger, custom_id="delete_vc")
+    @discord.ui.button(emoji="<:delete2:1502663989727854742>", style=discord.ButtonStyle.gray, custom_id="delete_vc")
     async def delete_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
             return await interaction.response.send_message("⚠️ Only the current owner can delete this room!", ephemeral=True)
@@ -519,37 +541,8 @@ class VoiceControlView(discord.ui.View):
         else:
             await interaction.response.send_message("⚠️ Error: This is not a temporary channel.", ephemeral=True)
 
-    # Kick Button
-    @discord.ui.button(label="Kick", style=discord.ButtonStyle.secondary, custom_id="kick_vc")
-    async def kick_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.is_owner(interaction):
-            return await interaction.response.send_message("⚠️ Only the owner can kick members!", ephemeral=True)
-            
-        members = [m for m in interaction.channel.members if m != interaction.user and not m.bot]
-        if not members:
-            return await interaction.response.send_message("No one else is here!", ephemeral=True)
-        
-        view = UniversalSelectView(members, kick_action, "Who should be kicked?")
-        await interaction.response.send_message("Select a member:", view=view, ephemeral=True)
-
-    # invite Button
-    @discord.ui.button(label="Invite", style=discord.ButtonStyle.blurple, emoji="👤", custom_id="invite_user_btn")
-    async def invite_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.is_owner(interaction):
-            return await interaction.response.send_message("⚠️ Only the owner can invite users!", ephemeral=True)
-
-        # Get all members except bots and the owner themselves
-        members = [m for m in interaction.guild.members if not m.bot and m != interaction.user]
-        
-        if not members:
-            return await interaction.response.send_message("No users found to invite.", ephemeral=True)
-
-        # Reusing your UniversalSelectView
-        view = UniversalSelectView(members, invite_action, "Who would you like to invite?")
-        await interaction.response.send_message("Select a user to invite:", view=view, ephemeral=True)
-
     # Trust Button
-    @discord.ui.button(label="Trust", style=discord.ButtonStyle.blurple, emoji="⭐", custom_id="trust_user_btn")
+    @discord.ui.button(emoji="<:trust2:1502664171408593036>", style=discord.ButtonStyle.gray, custom_id="trust_user_btn")
     async def trust_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
             return await interaction.response.send_message("⚠️ Only the owner can trust users!", ephemeral=True)
@@ -564,7 +557,7 @@ class VoiceControlView(discord.ui.View):
         await interaction.response.send_message("Select a user to trust:", view=view, ephemeral=True)
 
     # Untrust Button
-    @discord.ui.button(label="Untrust", style=discord.ButtonStyle.secondary, emoji="❌", custom_id="untrust_user_btn")
+    @discord.ui.button(emoji="<:untrust2:1502664216505614407>", style=discord.ButtonStyle.gray, custom_id="untrust_user_btn")
     async def untrust_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
             return await interaction.response.send_message("⚠️ Only the owner can manage trusted users!", ephemeral=True)
@@ -584,31 +577,77 @@ class VoiceControlView(discord.ui.View):
         view = UniversalSelectView(trusted_members, untrust_action, "Who should lose Trusted status?")
         await interaction.response.send_message("Select a user to untrust:", view=view, ephemeral=True)
 
-    # Privacy Dropdown Menu
-    @discord.ui.button(label="Privacy", style=discord.ButtonStyle.gray, emoji="🛡️", custom_id="privacy_menu_btn")
-    async def privacy_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    # invite Button
+    @discord.ui.button(emoji="<:invite2:1502664016642969670>", style=discord.ButtonStyle.gray, custom_id="invite_user_btn")
+    async def invite_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
-            return await interaction.response.send_message("⚠️ Only the owner can change privacy!", ephemeral=True)
+            return await interaction.response.send_message("⚠️ Only the owner can invite users!", ephemeral=True)
+
+        # Get all members except bots and the owner themselves
+        members = [m for m in interaction.guild.members if not m.bot and m != interaction.user]
         
-        # We pass self.is_owner so the sub-menu can still verify the user
-        view = PrivacySelectView(self.is_owner)
-        await interaction.response.send_message("Select a privacy setting:", view=view, ephemeral=True)
+        if not members:
+            return await interaction.response.send_message("No users found to invite.", ephemeral=True)
 
-    # Ownership transfer button
-    @discord.ui.button(label="Transfer Owner", style=discord.ButtonStyle.primary, emoji="👑", custom_id="transfer_vc")
-    async def transfer_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Reusing your UniversalSelectView
+        view = UniversalSelectView(members, invite_action, "Who would you like to invite?")
+        await interaction.response.send_message("Select a user to invite:", view=view, ephemeral=True)
+
+    # Kick Button
+    @discord.ui.button(emoji="<:kick2:1502664039250137168>", style=discord.ButtonStyle.gray, custom_id="kick_vc")
+    async def kick_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
-            return await interaction.response.send_message("⚠️ Only the current owner can transfer ownership!", ephemeral=True)
-
+            return await interaction.response.send_message("⚠️ Only the owner can kick members!", ephemeral=True)
+            
         members = [m for m in interaction.channel.members if m != interaction.user and not m.bot]
         if not members:
-            return await interaction.response.send_message("❌ No one else is here to take ownership!", ephemeral=True)
-
-        view = UniversalSelectView(members, transfer_action, "Pick the new owner...")
+            return await interaction.response.send_message("No one else is here!", ephemeral=True)
+        
+        view = UniversalSelectView(members, kick_action, "Who should be kicked?")
         await interaction.response.send_message("Select a member:", view=view, ephemeral=True)
 
+    # Block Button
+    @discord.ui.button(emoji="<:block2:1502663918311440566>", style=discord.ButtonStyle.gray, custom_id="block_vc")
+    async def block_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Your existing is_owner check
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("⚠️ Only the owner can block users!", ephemeral=True)
+
+        # Get members in the guild to block (we can't just look in the VC, 
+        # because you might want to block someone before they join!)
+        # To keep the list clean, let's look at people recently active or in the VC
+        members = [m for m in interaction.guild.members if not m.bot and m != interaction.user]
+        
+        # NOTE: If your server is huge, you might want to only show people 
+        # currently in the VC to keep the dropdown short:
+        # members = [m for m in interaction.channel.members if m != interaction.user]
+
+        if not members:
+            return await interaction.response.send_message("No one found to block.", ephemeral=True)
+
+        view = UniversalSelectView(members, block_action, "Who should be blocked from joining?")
+        await interaction.response.send_message("Select a member to block:", view=view, ephemeral=True)
+
+    # Unblock Button
+    @discord.ui.button(emoji="<:unblock2:1502664195882352731>", style=discord.ButtonStyle.gray, custom_id="unblock_vc")
+    async def unblock_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.is_owner(interaction):
+            return await interaction.response.send_message("⚠️ Only the owner can unblock users!", ephemeral=True)
+
+        # Look for members who currently have a 'connect=False' overwrite
+        blocked_members = []
+        for target, overwrite in interaction.channel.overwrites.items():
+            if isinstance(target, discord.Member) and overwrite.connect is False:
+                blocked_members.append(target)
+
+        if not blocked_members:
+            return await interaction.response.send_message("No one is currently blocked.", ephemeral=True)
+
+        view = UniversalSelectView(blocked_members, unblock_action, "Who should be unblocked?")
+        await interaction.response.send_message("Select a member to unblock:", view=view, ephemeral=True)
+
     # Claim ownership button
-    @discord.ui.button(label="Claim Ownership", style=discord.ButtonStyle.success, emoji="🙋‍♂️", custom_id="claim_vc")
+    @discord.ui.button(emoji="<:claim2:1502663959969398921>", style=discord.ButtonStyle.gray, custom_id="claim_vc")
     async def claim_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         channel = interaction.channel
         
@@ -642,45 +681,18 @@ class VoiceControlView(discord.ui.View):
 
         await interaction.response.send_message(f"👑 **{interaction.user.display_name}** is the new owner of this room!", ephemeral=False)
 
-    # Block Button
-    @discord.ui.button(label="Block", style=discord.ButtonStyle.secondary, emoji="🚫", custom_id="block_vc")
-    async def block_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Your existing is_owner check
+    # Ownership transfer button
+    @discord.ui.button(emoji="<:newowner2:1502664125711384586>", style=discord.ButtonStyle.gray, custom_id="transfer_vc")
+    async def transfer_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self.is_owner(interaction):
-            return await interaction.response.send_message("⚠️ Only the owner can block users!", ephemeral=True)
+            return await interaction.response.send_message("⚠️ Only the current owner can transfer ownership!", ephemeral=True)
 
-        # Get members in the guild to block (we can't just look in the VC, 
-        # because you might want to block someone before they join!)
-        # To keep the list clean, let's look at people recently active or in the VC
-        members = [m for m in interaction.guild.members if not m.bot and m != interaction.user]
-        
-        # NOTE: If your server is huge, you might want to only show people 
-        # currently in the VC to keep the dropdown short:
-        # members = [m for m in interaction.channel.members if m != interaction.user]
-
+        members = [m for m in interaction.channel.members if m != interaction.user and not m.bot]
         if not members:
-            return await interaction.response.send_message("No one found to block.", ephemeral=True)
+            return await interaction.response.send_message("❌ No one else is here to take ownership!", ephemeral=True)
 
-        view = UniversalSelectView(members, block_action, "Who should be blocked from joining?")
-        await interaction.response.send_message("Select a member to block:", view=view, ephemeral=True)
-
-    # Unblock Button
-    @discord.ui.button(label="Unblock", style=discord.ButtonStyle.secondary, emoji="✅", custom_id="unblock_vc")
-    async def unblock_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.is_owner(interaction):
-            return await interaction.response.send_message("⚠️ Only the owner can unblock users!", ephemeral=True)
-
-        # Look for members who currently have a 'connect=False' overwrite
-        blocked_members = []
-        for target, overwrite in interaction.channel.overwrites.items():
-            if isinstance(target, discord.Member) and overwrite.connect is False:
-                blocked_members.append(target)
-
-        if not blocked_members:
-            return await interaction.response.send_message("No one is currently blocked.", ephemeral=True)
-
-        view = UniversalSelectView(blocked_members, unblock_action, "Who should be unblocked?")
-        await interaction.response.send_message("Select a member to unblock:", view=view, ephemeral=True)
+        view = UniversalSelectView(members, transfer_action, "Pick the new owner...")
+        await interaction.response.send_message("Select a member:", view=view, ephemeral=True)
 
 # Running the Bot
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
